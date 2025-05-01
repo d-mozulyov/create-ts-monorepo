@@ -1,0 +1,1 @@
+npm login && node ./publish.js
