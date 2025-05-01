@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
-const unzipper = require('unzipper');
+const AdmZip = require('adm-zip');
 
 // ANSI color codes for console output
 const colors = {
@@ -93,55 +93,44 @@ async function main() {
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // Save archive to temporary file
-    const tempZipPath = path.join(monorepoPath, 'temp.zip');
-    fs.writeFileSync(tempZipPath, buffer);
-
-    console.log(formatMessage('Extracting template...', colors.blue));
-
-    // Use Extract to unpack the archive
-    await new Promise((resolve, reject) => {
-      fs.createReadStream(tempZipPath)
-        .pipe(unzipper.Extract({ path: monorepoPath }))
-        .on('close', () => {
-          resolve();
-        })
-        .on('error', (err) => {
-          reject(err);
-        });
+    // Analyze archive root entries
+    const zip = new AdmZip(buffer);
+    const zipEntries = zip.getEntries();
+    const rootEntries = [];
+    zipEntries.forEach(entry => {
+      const lastSlashIndex = entry.entryName.indexOf('/');
+      if (lastSlashIndex === -1 || lastSlashIndex === entry.entryName.length - 1) {
+        rootEntries.push(entry.entryName);
+      }
     });
-
-    // Remove temporary archive file
-    fs.unlinkSync(tempZipPath);
-
-    // Identify the root folder of the archive (usually it's the only folder in the root)
-    const rootItems = fs.readdirSync(monorepoPath);
-    let rootFolder = '';
-    for (const item of rootItems) {
-      const itemPath = path.join(monorepoPath, item);
-      const stats = fs.statSync(itemPath);
-      if (stats.isDirectory() && item.includes('ts-monorepo')) {
-        rootFolder = item;
-        break;
-      }
+    let unzipPathSliceLength = 0;
+    if (rootEntries.length === 1 && rootEntries[0].endsWith('/')) {
+      unzipPathSliceLength = rootEntries[0].length;
     }
 
-    if (rootFolder) {
-      // Move all files from the archive root folder to the target directory
-      const rootFolderPath = path.join(monorepoPath, rootFolder);
-      const rootFolderItems = fs.readdirSync(rootFolderPath);
-
-      for (const item of rootFolderItems) {
-        const sourcePath = path.join(rootFolderPath, item);
-        const targetPath = path.join(monorepoPath, item);
-
-        // Move file/folder
-        fs.renameSync(sourcePath, targetPath);
+    // Now extract each entry individually
+    console.log(formatMessage('Extracting template...', colors.blue));
+    zipEntries.forEach(entry => {
+      if (entry.entryName.length === unzipPathSliceLength) {
+        return;
       }
+      const entryPath = path.join(monorepoPath, entry.entryName.substring(unzipPathSliceLength));
 
-      // Remove empty archive root folder
-      fs.rmdirSync(rootFolderPath);
-    }
+      if (entry.isDirectory) {
+        // Create directory if it doesn't exist
+        if (!fs.existsSync(entryPath)) {
+          fs.mkdirSync(entryPath, { recursive: true });
+        }
+      } else {
+        // Ensure parent directory exists
+        const parentDir = path.dirname(entryPath);
+        if (!fs.existsSync(parentDir)) {
+          fs.mkdirSync(parentDir, { recursive: true });
+        }
+        // Extract file
+        zip.extractEntryTo(entry, parentDir, false, false);
+      }
+    });
 
     // Remove .vscode and LICENSE
     for (const item of ['.vscode', 'LICENSE']) {
